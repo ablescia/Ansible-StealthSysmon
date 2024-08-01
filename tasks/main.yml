@@ -1,0 +1,125 @@
+---
+
+- name: "Check required variables"
+  fail: msg="Variable '{{ item }}' is not defined"
+  when: item not in vars
+  with_items: "{{required_vars}}"
+
+- name: "Sysmon driver name variable format"
+  fail: msg="Variable sysmon_obfuscated_drivername must be 8 or less length"
+  when: sysmon_obfuscated_drivername | length > 8
+
+- name: Create directory
+  win_file:
+    path: "{{ sysmon_install_location }}"
+    state: directory
+  register: result
+
+- name: Get sysmon zip
+  win_get_url:
+    url: "{{ sysmon_download_url_base }}/{{ sysmon_download_file }}{{ file_ext }}"
+    dest: "{{ sysmon_install_location }}/{{ sysmon_download_file }}{{ file_ext }}"
+
+- name: Unzip sysmon
+  community.windows.win_unzip:
+    src: "{{ sysmon_install_location }}/{{ sysmon_download_file }}{{ file_ext }}"
+    dest: "{{ sysmon_install_location }}"
+
+- name: Remove Sysmon.zip file
+  ansible.windows.win_file:
+    path: "{{ sysmon_install_location }}/{{ sysmon_download_file }}{{ file_ext }}"
+    state: absent
+
+- name: Rename Sysmon files
+  win_shell: Get-ChildItem -Path "{{ sysmon_install_location }}" "Sysmon{{sysmon_architectures[ansible_facts['architecture2']]}}.exe" | Rename-Item -NewName {$_.Name -replace 'Sysmon{{sysmon_architectures[ansible_facts['architecture2']]}}.exe','{{sysmon_obfuscated_filename}}.exe'}
+
+- name: Enumerate unused files
+  ansible.windows.win_find:
+    paths: "{{sysmon_install_location}}"
+    patterns: '^Sysmon.+$'
+    use_regex: true
+  register: result
+
+- name: Delete unused files
+  ansible.windows.win_file:
+    state: absent
+    path: "{{ item }}"
+  loop: "{{ result.files|map(attribute='path')|list }}"
+
+- name: Copy sysmon config
+  win_get_url:
+    url: "{{ sysmon_config_url }}"
+    dest: "{{sysmon_install_location}}\\{{sysmon_config_filename}}"
+
+- name: Check sysmon service
+  ansible.windows.win_service:
+    name: "{{sysmon_obfuscated_filename}}"
+  register: result
+  failed_when: result is not defined
+
+- name: Run sysmon
+  win_command: "{{ sysmon_install_location }}\\{{sysmon_obfuscated_filename}}.exe -accepteula -i {{ sysmon_install_location }}\\{{sysmon_config_filename}} -d {{sysmon_obfuscated_drivername}}"
+  args:
+    chdir: "{{ sysmon_install_location }}"
+  when: result.state is not defined or result.name is not defined
+
+
+- name: Change sysmon driver description to {{sysmon_obfuscated_description}}
+  ansible.windows.win_regedit:
+    path: "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{{sysmon_obfuscated_drivername}}"
+    name: Description
+    data: "{{sysmon_obfuscated_description}}"
+
+- name: Change sysmon driver instance name to {{sysmon_obfuscated_instance_name}}
+  ansible.windows.win_regedit:
+    path: "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{{sysmon_obfuscated_drivername}}\\Instances"
+    name: DefaultInstance
+    data: "{{sysmon_obfuscated_instance_name}}"
+
+- name: Change sysmon driver instance registry key to {{sysmon_obfuscated_instance_name}}
+  win_shell: Rename-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Services\{{sysmon_obfuscated_drivername}}\Instances\Sysmon Instance" -NewName "{{sysmon_obfuscated_instance_name}}"
+
+
+- name: Change sysmon driver altitude to {{sysmon_obfuscated_driver_altitude}}
+  ansible.windows.win_regedit:
+    path: "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{{sysmon_obfuscated_drivername}}\\Instances\\{{sysmon_obfuscated_instance_name}}"
+    name: Altitude
+    data: "{{sysmon_obfuscated_driver_altitude}}"
+
+- name: Change sysmon service description to {{sysmon_obfuscated_description}}
+  win_shell: "Set-Service -Name {{sysmon_obfuscated_filename}} -Description '{{sysmon_obfuscated_description}}'"
+
+- name: Apply the Registry SACLs to monitor the enumeration attempts
+  ansible.windows.win_shell: |
+    $RegistryKey = '{{item}}'
+    $AuditIdentityReference = "Everyone"
+    $AuditRegistryRights = "QueryValues"
+    $AuditInheritanceFlags = "ContainerInherit,ObjectInherit"
+    $AuditPropagationFlags = "None"
+    $AuditFlags = "success"
+    $AuditRule = New-Object System.Security.AccessControl.RegistryAuditRule ($AuditIdentityReference,$AuditRegistryRights,$AuditInheritanceFlags,$AuditPropagationFlags,$AuditFlags)
+    $ACL = Get-Acl $RegistryKey
+    $ACL.AddAuditRule($AuditRule)
+    $ACL | Set-Acl -Path $RegistryKey
+  loop:
+    - HKCU:\Software\Sysinternals\System Monitor
+    - HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WINEVT\Channels\Microsoft-Windows-Sysmon/Operational
+    - "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{{sysmon_obfuscated_drivername}}\\Instances\\Sysmon Instance"
+
+- name: Apply the FileSystem SACL to monitor the enumeration attempts
+  ansible.windows.win_shell: |
+    $Path = '{{item}}'
+    $AuditUser = "Everyone"
+    $AuditRules = "Read"
+    $InheritType = "None"
+    $AuditType = "Success, Failure"
+    $PropogationType = "NoPropagateInherit"
+    $AccessRule = New-Object System.Security.AccessControl.FileSystemAuditRule($AuditUser,$AuditRules,$InheritType,$PropogationType,$AuditType)
+    #NOTE: Using get-acl instead of (get-item $Path).GetAccessControl('Access')
+    $ACL = get-acl $Path -audit
+    $ACL.AddAuditRule($AccessRule)
+    $ACL | Set-Acl $Path
+  loop:
+    - "{{sysmon_install_location}}\\{{sysmon_config_filename}}"
+
+

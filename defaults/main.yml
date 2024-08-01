@@ -1,0 +1,19 @@
+sysmon_architectures: {
+  "x86":"",
+  "x86_64": "64",
+  "arm":"64a"
+}
+
+sysmon_obfuscated_instance_name: "{{sysmon_obfuscated_filename}} Instance"
+#https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes
+sysmon_download_url_base: "https://download.sysinternals.com/files"
+sysmon_install_location: "c:\\{{sysmon_obfuscated_filename}}"
+sysmon_download_file: Sysmon
+file_ext: .zip
+sysmon_config_url: "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml"
+required_vars:
+  - sysmon_obfuscated_filename
+  - sysmon_obfuscated_drivername
+  - sysmon_obfuscated_description
+  - sysmon_obfuscated_driver_altitude
+  - sysmon_config_filename
